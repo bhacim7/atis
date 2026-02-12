@@ -3,6 +3,7 @@ import numpy as np
 import time
 import sys
 import math
+import os
 
 # Hardware Imports
 try:
@@ -58,6 +59,9 @@ FOV_X = 110.0 # ZED 2i approximate horizontal FOV in degrees
 AIM_TOLERANCE_PIXELS = 20 # Pixel error tolerance for aiming
 WATER_SPRAY_DURATION = 10.0 # Seconds
 SCAN_STEP_SIZE = 5 # Steps per loop iteration during scan
+
+# Model Path (TensorRT Engine)
+MODEL_PATH = "/home/yarkin/roboboatIDA/roboboat/weights/small640.engine"
 
 class HardwareController:
     def __init__(self):
@@ -190,13 +194,21 @@ class CameraHandler:
                 self.image_mat = sl.Mat()
 
         if YOLO:
-            print("Loading YOLO model...")
-            # Using standard yolov8n.pt as per plan (IDA1.py uses yolov11n.pt but 8 is standard backup)
-            # IDA1.py: model = YOLO("yolov11n.pt")
-            try:
+            print(f"Loading YOLO model (TensorRT Engine)...")
+
+            # Logic from IDA1.py: Use .engine file if available, else fallback
+            if not os.path.exists(MODEL_PATH):
+                print(f"[WARNING] {MODEL_PATH} not found. Using yolov11n.pt as fallback (simulation mode).")
                 self.model = YOLO("yolov11n.pt")
+            else:
+                self.model = YOLO(MODEL_PATH)
+
+            try:
+                # Enable FP16 and CUDA for Jetson Orin Nano
+                self.model.to('cuda').half()
+                print("[INFO] Model loaded in FP16 mode (TensorRT optimized).")
             except Exception as e:
-                print(f"Failed to load YOLO: {e}")
+                print(f"Model GPU Error: {e}")
 
     def get_frame(self):
         if not self.zed: return None

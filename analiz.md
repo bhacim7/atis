@@ -13,7 +13,10 @@ The system `atis_sistem.py` was created by integrating logic from the provided r
 2.  **Camera & AI (`IDA1.py` & `kamera.py`)**:
     *   The `CameraHandler` class handles the ZED 2i camera and Object Detection.
     *   **ZED 2i**: Initialized using `pyzed.sl` with parameters extracted from `kamera.py` (HD720, 30FPS, PERFORMANCE depth mode).
-    *   **YOLO**: Utilizes the `ultralytics` library as seen in `IDA1.py` for object detection. It defaults to `yolov11n.pt` (or `yolov8n.pt` as backup) and filters for Class IDs 2 (Car/Ball) and 11 (Stop Sign/Water Spray) to simulate the requested targets.
+    *   **YOLO (TensorRT)**: Utilizes the `ultralytics` library but strictly enforces the use of the **TensorRT Engine** format (`.engine`) as seen in `IDA1.py`.
+        *   It looks for the engine file at `/home/yarkin/roboboatIDA/roboboat/weights/small640.engine`.
+        *   If the engine file is found, it loads it and enables **CUDA** and **FP16** (Half Precision) optimization for the Jetson Orin Nano.
+        *   A fallback to `yolov11n.pt` is included only for simulation/testing purposes if the engine file is missing.
 
 3.  **PID Control (`denemePro.py`)**:
     *   The `PIDController` class implements the Yaw PID logic extracted from `denemePro.py`.
@@ -31,6 +34,7 @@ The system operates in a continuous loop with the following states:
 2.  **Target Detection**:
     *   If **Target ID 2** is detected (Priority High): The system switches to `TRACKING` mode. Once aligned (error < tolerance), it triggers `ACTION_ID2`.
     *   If **Target ID 11** is detected (Priority Low): The system switches to `TRACKING` mode. Once aligned, it triggers `ACTION_ID11`.
+    *   **Target Locking**: During actions (especially water spraying), the system locks onto the specific target ID to prevent swapping to a higher priority target mid-action.
 
 3.  **Action Scenarios**:
     *   **Scenario A (ID 2 - Ball Firing)**: The system fires one ball by rotating the next available servo (1, 2, or 3) to 90 degrees and back. It then resumes scanning.
@@ -55,3 +59,4 @@ The following parameters in `atis_sistem.py` can be tuned for field performance:
 *   `AIM_TOLERANCE_PIXELS` (Default: 20): How close to the center the target must be to trigger an action.
 *   `WATER_SPRAY_DURATION` (Default: 10.0): Duration in seconds to hold aim for Scenario B.
 *   `SCAN_STEP_SIZE` (Default: 5): How many steps to move per loop iteration during scanning.
+*   `MODEL_PATH`: Path to the TensorRT `.engine` file.
