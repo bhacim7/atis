@@ -49,6 +49,7 @@ KP_YAW = 0.8
 KI_YAW = 0.005
 KD_YAW = 0.02
 PID_LIMIT = 20.0 # Integral limit
+FRICTION_OFFSET = 0.0 # Degrees to add to overcome friction/drag. Start small (e.g. 0.5) if needed.
 
 # Image Settings
 IMG_WIDTH = 1280
@@ -289,6 +290,34 @@ class System:
         self.relay_start_time = 0
         self.relay_active = False
         self.scan_direction = 1
+        self.yaw_accumulator = 0.0
+
+    def apply_tracking_correction(self, error_pixels, delta_time):
+        """
+        Calculates and applies stepper movement based on PID output,
+        accounting for friction offset and sub-step accumulation.
+        """
+        # Calculate correction
+        yaw_correction_deg = self.pid.update(error_pixels, delta_time)
+
+        # Friction Compensation (if moving)
+        if yaw_correction_deg > 1e-6:
+            yaw_correction_deg += FRICTION_OFFSET
+        elif yaw_correction_deg < -1e-6:
+            yaw_correction_deg -= FRICTION_OFFSET
+
+        # Accumulate for sub-step precision
+        steps_float = yaw_correction_deg * STEPS_PER_DEGREE
+        self.yaw_accumulator += steps_float
+
+        steps_to_move = int(self.yaw_accumulator)
+        self.yaw_accumulator -= steps_to_move # Keep fractional part
+
+        steps = abs(steps_to_move)
+        direction = 1 if steps_to_move > 0 else 0
+
+        if steps >= 1:
+             self.hw.rotate_stepper(steps, direction)
 
     def run(self):
         print("System Started. Loop running...")
@@ -374,16 +403,7 @@ class System:
                     center_x = IMG_WIDTH // 2
                     error_pixels = target['center'][0] - center_x
 
-                    # Calculate correction
-                    yaw_correction_deg = self.pid.update(error_pixels, delta_time)
-
-                    # Convert degrees to steps
-                    steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
-                    direction = 1 if yaw_correction_deg > 0 else 0 # Assuming 1 is Right/CW
-
-                    # Apply movement
-                    if steps >= 1:
-                         self.hw.rotate_stepper(steps, direction)
+                    self.apply_tracking_correction(error_pixels, delta_time)
 
                     # Check alignment
                     if abs(error_pixels) < AIM_TOLERANCE_PIXELS:
@@ -429,11 +449,8 @@ class System:
                     # PID Control (Keep Aiming)
                     center_x = IMG_WIDTH // 2
                     error_pixels = target['center'][0] - center_x
-                    yaw_correction_deg = self.pid.update(error_pixels, delta_time)
-                    steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
-                    direction = 1 if yaw_correction_deg > 0 else 0
-                    if steps >= 1:
-                         self.hw.rotate_stepper(steps, direction)
+
+                    self.apply_tracking_correction(error_pixels, delta_time)
 
         except KeyboardInterrupt:
             print("Stopping...")
