@@ -75,7 +75,8 @@ class HardwareController:
             GPIO.setup([STEP_PIN, DIR_PIN, ENA_PIN, RELAY_PIN], GPIO.OUT, initial=GPIO.LOW)
             GPIO.output(ENA_PIN, GPIO.LOW) # Enable Stepper
             # Relay acts as armed when HIGH? Prompt says "Relay Pin must be set to HIGH continuously"
-            GPIO.output(RELAY_PIN, GPIO.HIGH)
+            # UPDATE: User requested Relay LOW initially, HIGH during ID11 maneuver.
+            GPIO.output(RELAY_PIN, GPIO.LOW)
 
             # I2C / ServoKit Setup
             try:
@@ -157,7 +158,9 @@ class HardwareController:
 
     def set_relay(self, state):
         if self.mock_mode: return
-        GPIO.output(RELAY_PIN, state)
+        # Ensure state is boolean or 0/1
+        gpio_state = GPIO.HIGH if state else GPIO.LOW
+        GPIO.output(RELAY_PIN, gpio_state)
 
     def cleanup(self):
         if self.mock_mode: return
@@ -282,7 +285,9 @@ class System:
         self.state = "SCANNING"
         self.last_time = time.time()
         self.target_lost_timer = 0
-        self.spray_start_time = 0
+        self.spray_start_time = 0 # Deprecated in favor of relay_start_time for ID11, used for compatibility? No, remove.
+        self.relay_start_time = 0
+        self.relay_active = False
         self.scan_direction = 1
 
     def run(self):
@@ -302,11 +307,13 @@ class System:
                 target = None
 
                 # Target Selection logic
-                if self.state == "ACTION_ID11":
-                    # In Spraying State, lock onto ID 11 and ignore ID 2 to prevent swapping
+                if self.state == "ACTION_ID11" or (self.state == "TRACKING" and self.relay_active):
+                    # In Spraying State or Tracking for Spray, lock onto ID 11 and ignore ID 2 to prevent swapping
                     targets_11 = [d for d in detections if d['id'] == 11]
                     if targets_11:
                         target = targets_11[0]
+                    else:
+                        target = None # Lost ID 11, do not swap to ID 2
                 else:
                     # General Priority: ID 2 > ID 11
                     targets_2 = [d for d in detections if d['id'] == 2]
@@ -322,6 +329,13 @@ class System:
                     if target:
                         print(f"Target Found (ID {target['id']}). Switching to TRACKING.")
                         self.state = "TRACKING"
+
+                        if target['id'] == 11:
+                            print("ID 11 Detected. Starting Relay and Timer.")
+                            self.hw.set_relay(True)
+                            self.relay_active = True
+                            self.relay_start_time = current_time
+
                     else:
                         # Scan behavior: Rotate stepper
                         self.hw.rotate_stepper(SCAN_STEP_SIZE, self.scan_direction)
@@ -329,10 +343,29 @@ class System:
                         # For now, continuous rotation as per prompt "Stepper Motor should rotate continuously".
 
                 elif self.state == "TRACKING":
+                    # Check Relay Timer (if active)
+                    if self.relay_active:
+                        if current_time - self.relay_start_time > WATER_SPRAY_DURATION:
+                            print("Relay Timer Expired (10s). Relay LOW. Resuming Scan.")
+                            self.hw.set_relay(False)
+                            self.relay_active = False
+                            self.state = "SCANNING"
+                            # Reset PID errors
+                            self.pid.integral_yaw = 0
+                            self.pid.last_error_yaw = 0
+                            continue
+
                     if not target:
                         print("Target Lost. Switching to SCANNING.")
                         self.state = "SCANNING"
-                        # Reset PID errors?
+
+                        # Ensure Relay is OFF if we lost tracking mid-maneuver
+                        if self.relay_active:
+                            print("Target Lost during maneuver. Relay LOW.")
+                            self.hw.set_relay(False)
+                            self.relay_active = False
+
+                        # Reset PID errors
                         self.pid.integral_yaw = 0
                         self.pid.last_error_yaw = 0
                         continue
@@ -359,7 +392,7 @@ class System:
                             self.state = "ACTION_ID2"
                         elif target['id'] == 11:
                             print("Aligned with ID 11. Engaging Scenario B (Water).")
-                            self.spray_start_time = time.time()
+                            # Relay is already HIGH from SCANNING -> TRACKING transition
                             self.state = "ACTION_ID11"
 
                 elif self.state == "ACTION_ID2":
@@ -374,12 +407,22 @@ class System:
 
                 elif self.state == "ACTION_ID11":
                     # Water Spraying
-                    # "Relay Pin must be set to HIGH continuously" -> It is already HIGH in init.
+                    # "Relay Pin must be set to HIGH continuously" -> It is already HIGH.
                     # "Lock onto the target and hold the aim for approximately 10 seconds."
+
+                    # Check Timer (Global timer for this maneuver)
+                    if current_time - self.relay_start_time > WATER_SPRAY_DURATION:
+                        print("Water Spray Complete (10s). Resuming Scan.")
+                        self.hw.set_relay(False)
+                        self.relay_active = False
+                        self.state = "SCANNING"
+                        continue
 
                     # We need to Keep Tracking (PID) while in this state
                     if not target:
                         print("Target lost during spray. Resuming Scan.")
+                        self.hw.set_relay(False)
+                        self.relay_active = False
                         self.state = "SCANNING"
                         continue
 
@@ -391,11 +434,6 @@ class System:
                     direction = 1 if yaw_correction_deg > 0 else 0
                     if steps >= 1:
                          self.hw.rotate_stepper(steps, direction)
-
-                    # Check Timer
-                    if time.time() - self.spray_start_time > WATER_SPRAY_DURATION:
-                        print("Water Spray Complete (10s). Resuming Scan.")
-                        self.state = "SCANNING"
 
         except KeyboardInterrupt:
             print("Stopping...")
