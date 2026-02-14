@@ -42,7 +42,9 @@ BLDC_CHANNEL = 4           # ESC for Brushless Motor
 # Stepper Settings
 STEPS_PER_REV = 1600  # 1/8 microstepping assumed from olcak.py
 STEPS_PER_DEGREE = STEPS_PER_REV / 360.0
-STEP_DELAY = 0.0004   # Speed control
+MIN_STEP_MOVE = 10    # Minimum packet of steps to overcome friction/cable tension
+MAX_STEPS_PER_LOOP = 100 # Safety cap
+STEP_DELAY = 0.0015   # Speed control
 
 # PID Constants (from denemePro.py)
 KP_YAW = 0.8
@@ -56,7 +58,7 @@ IMG_HEIGHT = 720
 FOV_X = 110.0 # ZED 2i approximate horizontal FOV in degrees
 
 # Operational Settings
-AIM_TOLERANCE_PIXELS = 20 # Pixel error tolerance for aiming
+AIM_TOLERANCE_PIXELS = 40 # Pixel error tolerance for aiming
 WATER_SPRAY_DURATION = 10.0 # Seconds
 SCAN_STEP_SIZE = 5 # Steps per loop iteration during scan
 
@@ -374,18 +376,7 @@ class System:
                     center_x = IMG_WIDTH // 2
                     error_pixels = target['center'][0] - center_x
 
-                    # Calculate correction
-                    yaw_correction_deg = self.pid.update(error_pixels, delta_time)
-
-                    # Convert degrees to steps
-                    steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
-                    direction = 1 if yaw_correction_deg > 0 else 0 # Assuming 1 is Right/CW
-
-                    # Apply movement
-                    if steps >= 1:
-                         self.hw.rotate_stepper(steps, direction)
-
-                    # Check alignment
+                    # Check alignment FIRST
                     if abs(error_pixels) < AIM_TOLERANCE_PIXELS:
                         if target['id'] == 2:
                             print("Aligned with ID 2. Engaging Scenario A (Fire).")
@@ -394,6 +385,22 @@ class System:
                             print("Aligned with ID 11. Engaging Scenario B (Water).")
                             # Relay is already HIGH from SCANNING -> TRACKING transition
                             self.state = "ACTION_ID11"
+                        continue # Don't move if aligned
+
+                    # Calculate correction
+                    yaw_correction_deg = self.pid.update(error_pixels, delta_time)
+
+                    # Convert degrees to steps
+                    steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
+                    direction = 1 if yaw_correction_deg > 0 else 0 # Assuming 1 is Right/CW
+
+                    # Apply movement logic with Min/Max clamping
+                    if steps < MIN_STEP_MOVE:
+                        steps = MIN_STEP_MOVE
+                    if steps > MAX_STEPS_PER_LOOP:
+                        steps = MAX_STEPS_PER_LOOP
+
+                    self.hw.rotate_stepper(steps, direction)
 
                 elif self.state == "ACTION_ID2":
                     # Fire Ball
@@ -429,11 +436,20 @@ class System:
                     # PID Control (Keep Aiming)
                     center_x = IMG_WIDTH // 2
                     error_pixels = target['center'][0] - center_x
+
+                    if abs(error_pixels) < AIM_TOLERANCE_PIXELS:
+                        continue
+
                     yaw_correction_deg = self.pid.update(error_pixels, delta_time)
                     steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
                     direction = 1 if yaw_correction_deg > 0 else 0
-                    if steps >= 1:
-                         self.hw.rotate_stepper(steps, direction)
+
+                    if steps < MIN_STEP_MOVE:
+                        steps = MIN_STEP_MOVE
+                    if steps > MAX_STEPS_PER_LOOP:
+                        steps = MAX_STEPS_PER_LOOP
+
+                    self.hw.rotate_stepper(steps, direction)
 
         except KeyboardInterrupt:
             print("Stopping...")
