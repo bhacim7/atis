@@ -33,7 +33,7 @@ except ImportError as e:
 STEP_PIN = 33
 DIR_PIN = 31
 ENA_PIN = 37
-RELAY_PIN = 12  # TODO: Configure this pin! currently placeholder.
+RELAY_PIN = 12
 
 # I2C / PCA9685
 SERVO_CHANNELS = [1, 2, 3] # Servo 1, 2, 3
@@ -43,6 +43,11 @@ BLDC_CHANNEL = 4           # ESC for Brushless Motor
 STEPS_PER_REV = 1600  # 1/8 microstepping assumed from olcak.py
 STEPS_PER_DEGREE = STEPS_PER_REV / 360.0
 STEP_DELAY = 0.0004   # Speed control
+SWEEP_ANGLE = 270     # Sweep angle (total range from center: +/- SWEEP_ANGLE)
+SWEEP_STEPS = int(SWEEP_ANGLE * STEPS_PER_DEGREE)
+
+# BLDC Settings
+BLDC_ACTIVE_PWM = 1850
 
 # PID Constants (from denemePro.py)
 KP_YAW = 0.8
@@ -66,6 +71,7 @@ MODEL_PATH = "/home/yarkin/roboboatIDA/roboboat/weights/small640.engine"
 class HardwareController:
     def __init__(self):
         self.mock_mode = (GPIO is None or ServoKit is None)
+        self.current_steps = 0 # Track steps from center (0)
 
         if not self.mock_mode:
             # GPIO Setup
@@ -74,8 +80,6 @@ class HardwareController:
             GPIO.setwarnings(False)
             GPIO.setup([STEP_PIN, DIR_PIN, ENA_PIN, RELAY_PIN], GPIO.OUT, initial=GPIO.LOW)
             GPIO.output(ENA_PIN, GPIO.LOW) # Enable Stepper
-            # Relay acts as armed when HIGH? Prompt says "Relay Pin must be set to HIGH continuously"
-            # UPDATE: User requested Relay LOW initially, HIGH during ID11 maneuver.
             GPIO.output(RELAY_PIN, GPIO.LOW)
 
             # I2C / ServoKit Setup
@@ -103,26 +107,47 @@ class HardwareController:
         self.ball_index = 0 # 0, 1, 2 corresponds to Servo 1, 2, 3
 
     def arm_bldc(self):
-        """Arm the ESC and start spinning."""
+        """Arm the ESC."""
         if self.mock_mode or not self.kit: return
         print("Arming BLDC...")
         self.kit.servo[BLDC_CHANNEL].angle = 0
         time.sleep(2) # Wait for beep-beep
+        print("BLDC Armed (Idle).")
 
-        # Start Spinning (Continuous)
-        # olcak.py uses 1850us pwm.
-        # pwm_to_angle(1850) -> (1850-1000)*180/1000 = 0.85 * 180 = 153 degrees
-        target_pwm = 1850
+    def activate_bldc(self):
+        """Start BLDC motor at active speed."""
+        if self.mock_mode or not self.kit:
+            print(f"Mock: BLDC Activated ({BLDC_ACTIVE_PWM})")
+            return
+
+        target_pwm = BLDC_ACTIVE_PWM
         angle = (target_pwm - 1000) * 180 / 1000
         self.kit.servo[BLDC_CHANNEL].angle = angle
-        print(f"BLDC Spinning at {target_pwm}us ({angle} deg)")
+        print(f"BLDC Activated ({target_pwm}us).")
+
+    def deactivate_bldc(self):
+        """Stop BLDC motor."""
+        if self.mock_mode or not self.kit:
+            print("Mock: BLDC Deactivated")
+            return
+
+        self.kit.servo[BLDC_CHANNEL].angle = 0
+        print("BLDC Deactivated.")
 
     def rotate_stepper(self, steps, direction):
         """
         Rotate stepper motor.
-        direction: 1 (CW/Right) or 0 (CCW/Left) - Assumption, verify wiring.
+        direction: 1 (CW/Right) or 0 (CCW/Left)
         """
-        if self.mock_mode: return
+        # Update internal position tracking (Always, even in mock)
+        if direction == 1:
+            self.current_steps += int(steps)
+        else:
+            self.current_steps -= int(steps)
+
+        if self.mock_mode:
+            # print(f"Mock: Rotate {steps} steps, Dir {direction}, Current: {self.current_steps}")
+            return
 
         GPIO.output(DIR_PIN, direction)
         for _ in range(int(steps)):
@@ -164,7 +189,7 @@ class HardwareController:
 
     def cleanup(self):
         if self.mock_mode: return
-        # Stop BLDC
+        # Stop BLDC and Servos
         if self.kit:
             self.kit.servo[BLDC_CHANNEL].angle = 0
             for i in SERVO_CHANNELS:
@@ -285,10 +310,9 @@ class System:
         self.state = "SCANNING"
         self.last_time = time.time()
         self.target_lost_timer = 0
-        self.spray_start_time = 0 # Deprecated in favor of relay_start_time for ID11, used for compatibility? No, remove.
         self.relay_start_time = 0
         self.relay_active = False
-        self.scan_direction = 1
+        self.scan_direction = 1 # 1 = CW, 0 = CCW
 
     def run(self):
         print("System Started. Loop running...")
@@ -302,18 +326,16 @@ class System:
                 detections = self.cam.detect_objects(frame)
 
                 # Sort detections by priority: ID 2 > ID 11
-                # ID 2 (Car) -> Scenario A (Ball)
-                # ID 11 (Stop Sign) -> Scenario B (Water)
                 target = None
 
                 # Target Selection logic
                 if self.state == "ACTION_ID11" or (self.state == "TRACKING" and self.relay_active):
-                    # In Spraying State or Tracking for Spray, lock onto ID 11 and ignore ID 2 to prevent swapping
+                    # In Spraying State or Tracking for Spray, lock onto ID 11
                     targets_11 = [d for d in detections if d['id'] == 11]
                     if targets_11:
                         target = targets_11[0]
                     else:
-                        target = None # Lost ID 11, do not swap to ID 2
+                        target = None
                 else:
                     # General Priority: ID 2 > ID 11
                     targets_2 = [d for d in detections if d['id'] == 2]
@@ -337,10 +359,14 @@ class System:
                             self.relay_start_time = current_time
 
                     else:
-                        # Scan behavior: Rotate stepper
+                        # Scan behavior: Sweep Logic
+                        # Check limits
+                        if self.hw.current_steps >= SWEEP_STEPS:
+                            self.scan_direction = 0 # Go Left (CCW)
+                        elif self.hw.current_steps <= -SWEEP_STEPS:
+                            self.scan_direction = 1 # Go Right (CW)
+
                         self.hw.rotate_stepper(SCAN_STEP_SIZE, self.scan_direction)
-                        # Optional: Reverse direction if limit switch or count reached?
-                        # For now, continuous rotation as per prompt "Stepper Motor should rotate continuously".
 
                 elif self.state == "TRACKING":
                     # Check Relay Timer (if active)
@@ -350,24 +376,19 @@ class System:
                             self.hw.set_relay(False)
                             self.relay_active = False
                             self.state = "SCANNING"
-                            # Reset PID errors
                             self.pid.integral_yaw = 0
-                            self.pid.last_error_yaw = 0
                             continue
 
                     if not target:
                         print("Target Lost. Switching to SCANNING.")
                         self.state = "SCANNING"
 
-                        # Ensure Relay is OFF if we lost tracking mid-maneuver
                         if self.relay_active:
                             print("Target Lost during maneuver. Relay LOW.")
                             self.hw.set_relay(False)
                             self.relay_active = False
 
-                        # Reset PID errors
                         self.pid.integral_yaw = 0
-                        self.pid.last_error_yaw = 0
                         continue
 
                     # PID Control
@@ -379,7 +400,7 @@ class System:
 
                     # Convert degrees to steps
                     steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
-                    direction = 1 if yaw_correction_deg > 0 else 0 # Assuming 1 is Right/CW
+                    direction = 1 if yaw_correction_deg > 0 else 0
 
                     # Apply movement
                     if steps >= 1:
@@ -392,24 +413,26 @@ class System:
                             self.state = "ACTION_ID2"
                         elif target['id'] == 11:
                             print("Aligned with ID 11. Engaging Scenario B (Water).")
-                            # Relay is already HIGH from SCANNING -> TRACKING transition
                             self.state = "ACTION_ID11"
 
                 elif self.state == "ACTION_ID2":
-                    # Fire Ball
+                    # Fire Ball Sequence
+                    print("Starting ID 2 Sequence: Activating BLDC...")
+                    self.hw.activate_bldc()
+                    time.sleep(1.0) # Wait for spin up
+
+                    print("Firing Ball...")
                     self.hw.drop_ball()
-                    # Wait/Cooldown or Immediate Resume?
-                    # "After the servo triggers ... resume the Default State"
-                    print("Ball Fired. Resuming Scan.")
+
+                    print("Sequence Complete. Deactivating BLDC.")
+                    self.hw.deactivate_bldc()
+
+                    print("Resuming Scan.")
                     self.state = "SCANNING"
-                    # Reset PID
                     self.pid.integral_yaw = 0
 
                 elif self.state == "ACTION_ID11":
                     # Water Spraying
-                    # "Relay Pin must be set to HIGH continuously" -> It is already HIGH.
-                    # "Lock onto the target and hold the aim for approximately 10 seconds."
-
                     # Check Timer (Global timer for this maneuver)
                     if current_time - self.relay_start_time > WATER_SPRAY_DURATION:
                         print("Water Spray Complete (10s). Resuming Scan.")
