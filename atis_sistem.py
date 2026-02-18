@@ -36,42 +36,43 @@ ENA_PIN = 37
 RELAY_PIN = 12
 
 # I2C / PCA9685
-SERVO_CHANNELS = [1, 3, 2] # Servo 1, 2, 3
-BLDC_CHANNEL = 4           # ESC for Brushless Motor
+SERVO_CHANNELS = [1, 3, 2]  # Servo 1, 2, 3
+BLDC_CHANNEL = 4  # ESC for Brushless Motor
 
 # Stepper Settings
 STEPS_PER_REV = 1600  # 1/8 microstepping assumed from olcak.py
 STEPS_PER_DEGREE = STEPS_PER_REV / 360.0
-STEP_DELAY = 0.0007   # Speed control
-SWEEP_ANGLE = 100     # Sweep angle (total range from center: +/- SWEEP_ANGLE)
+STEP_DELAY = 0.0007  # Speed control
+SWEEP_ANGLE = 100  # Sweep angle (total range from center: +/- SWEEP_ANGLE)
 SWEEP_STEPS = int(SWEEP_ANGLE * STEPS_PER_DEGREE)
 
 # BLDC Settings
-BLDC_ACTIVE_PWM = 1850
+BLDC_ACTIVE_PWM = 2000
 
 # PID Constants (from denemePro.py)
 KP_YAW = 0.5
 KI_YAW = 0.005
 KD_YAW = 0.02
-PID_LIMIT = 20.0 # Integral limit
+PID_LIMIT = 20.0  # Integral limit
 
 # Image Settings
 IMG_WIDTH = 1920
 IMG_HEIGHT = 1080
-FOV_X = 110.0 # ZED 2i approximate horizontal FOV in degrees
+FOV_X = 110.0  # ZED 2i approximate horizontal FOV in degrees
 
 # Operational Settings
-AIM_TOLERANCE_PIXELS = 30 # Pixel error tolerance for aiming
-WATER_SPRAY_DURATION = 10.0 # Seconds
-SCAN_STEP_SIZE = 5 # Steps per loop iteration during scan
+AIM_TOLERANCE_PIXELS = 30  # Pixel error tolerance for aiming
+WATER_SPRAY_DURATION = 10.0  # Seconds
+SCAN_STEP_SIZE = 5  # Steps per loop iteration during scan
 
 # Model Path (TensorRT Engine)
 MODEL_PATH = "/home/siren/PycharmProjects/PythonProject/atis/weights/TNA.engine"
 
+
 class HardwareController:
     def __init__(self):
         self.mock_mode = (GPIO is None or ServoKit is None)
-        self.current_steps = 0 # Track steps from center (0)
+        self.current_steps = 0  # Track steps from center (0)
 
         if not self.mock_mode:
             # GPIO Setup
@@ -79,7 +80,7 @@ class HardwareController:
             GPIO.setmode(GPIO.BOARD)
             GPIO.setwarnings(False)
             GPIO.setup([STEP_PIN, DIR_PIN, ENA_PIN, RELAY_PIN], GPIO.OUT, initial=GPIO.LOW)
-            GPIO.output(ENA_PIN, GPIO.LOW) # Enable Stepper
+            GPIO.output(ENA_PIN, GPIO.LOW)  # Enable Stepper
             GPIO.output(RELAY_PIN, GPIO.LOW)
 
             # I2C / ServoKit Setup
@@ -94,8 +95,15 @@ class HardwareController:
                 self.kit = ServoKit(channels=16, i2c=i2c_bus0, address=0x41)
 
                 # Setup Pulse Widths (from olcak.py)
-                for i in range(1, 5): # 1, 2, 3, 4
+                for i in range(1, 5):  # 1, 2, 3, 4
                     self.kit.servo[i].set_pulse_width_range(1000, 2000)
+
+                try:
+                    self.kit.servo[SERVO_CHANNELS[0]].angle = 160
+                    self.kit.servo[SERVO_CHANNELS[2]].angle = 160
+                    self.kit.servo[SERVO_CHANNELS[1]].angle = 160
+                except Exception as e:
+                    print(f"Servo init error: {e}")
 
                 print("Hardware initialized.")
                 self.arm_bldc()
@@ -104,14 +112,14 @@ class HardwareController:
                 print(f"I2C/ServoKit Error: {e}")
                 self.kit = None
 
-        self.ball_index = 0 # 0, 1, 2 corresponds to Servo 1, 2, 3
+        self.ball_index = 0  # 0, 1, 2 corresponds to Servo 1, 2, 3
 
     def arm_bldc(self):
         """Arm the ESC."""
         if self.mock_mode or not self.kit: return
         print("Arming BLDC...")
         self.kit.servo[BLDC_CHANNEL].angle = 0
-        time.sleep(2) # Wait for beep-beep
+        time.sleep(2)  # Wait for beep-beep
         print("BLDC Armed (Idle).")
 
     def activate_bldc(self):
@@ -172,14 +180,12 @@ class HardwareController:
         servo_ch = SERVO_CHANNELS[self.ball_index]
         print(f"Firing Ball {self.ball_index + 1} using Servo {servo_ch}")
 
-        
-
         # Rotate 90 degrees to drop
-        self.kit.servo[servo_ch].angle = 90
-        time.sleep(0.5)
-        # Return to 0
         self.kit.servo[servo_ch].angle = 0
         time.sleep(0.5)
+        # Return to 0
+        # self.kit.servo[servo_ch].angle = 160
+        # time.sleep(0.5)
 
         self.ball_index += 1
 
@@ -197,9 +203,10 @@ class HardwareController:
             for i in SERVO_CHANNELS:
                 self.kit.servo[i].angle = 0
 
-        GPIO.output(ENA_PIN, GPIO.HIGH) # Disable motor
+        GPIO.output(ENA_PIN, GPIO.HIGH)  # Disable motor
         GPIO.cleanup()
         print("Hardware cleaned up.")
+
 
 class CameraHandler:
     def __init__(self):
@@ -244,7 +251,7 @@ class CameraHandler:
         if not self.zed: return None
         if self.zed.grab(self.runtime_params) == sl.ERROR_CODE.SUCCESS:
             self.zed.retrieve_image(self.image_mat, sl.VIEW.LEFT)
-            return self.image_mat.get_data() # BGRA
+            return self.image_mat.get_data()  # BGRA
         return None
 
     def detect_objects(self, frame):
@@ -262,7 +269,7 @@ class CameraHandler:
         for result in results:
             for box in result.boxes:
                 cls_id = int(box.cls[0])
-                if cls_id in [2, 11]: # Target IDs
+                if cls_id in [2, 11]:  # Target IDs
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     cx = int((x1 + x2) / 2)
                     cy = int((y1 + y2) / 2)
@@ -274,6 +281,7 @@ class CameraHandler:
                         'center': (cx, cy)
                     })
         return detections
+
 
 class PIDController:
     def __init__(self):
@@ -303,6 +311,7 @@ class PIDController:
         self.last_error_yaw = error_degrees
         return output_yaw
 
+
 class System:
     def __init__(self):
         self.hw = HardwareController()
@@ -314,7 +323,7 @@ class System:
         self.target_lost_timer = 0
         self.relay_start_time = 0
         self.relay_active = False
-        self.scan_direction = 1 # 1 = CW, 0 = CCW
+        self.scan_direction = 1  # 1 = CW, 0 = CCW
 
     def run(self):
         print("System Started. Loop running...")
@@ -342,7 +351,7 @@ class System:
                     # General Priority: ID 2 > ID 11
                     targets_2 = [d for d in detections if d['id'] == 2]
                     if targets_2:
-                        target = targets_2[0] # Pick first
+                        target = targets_2[0]  # Pick first
                     else:
                         targets_11 = [d for d in detections if d['id'] == 11]
                         if targets_11:
@@ -364,9 +373,9 @@ class System:
                         # Scan behavior: Sweep Logic
                         # Check limits
                         if self.hw.current_steps >= SWEEP_STEPS:
-                            self.scan_direction = 0 # Go Left (CCW)
+                            self.scan_direction = 0  # Go Left (CCW)
                         elif self.hw.current_steps <= -SWEEP_STEPS:
-                            self.scan_direction = 1 # Go Right (CW)
+                            self.scan_direction = 1  # Go Right (CW)
 
                         self.hw.rotate_stepper(SCAN_STEP_SIZE, self.scan_direction)
 
@@ -406,7 +415,7 @@ class System:
 
                     # Apply movement
                     if steps >= 1:
-                         self.hw.rotate_stepper(steps, direction)
+                        self.hw.rotate_stepper(steps, direction)
 
                     # Check alignment
                     if abs(error_pixels) < AIM_TOLERANCE_PIXELS:
@@ -421,7 +430,7 @@ class System:
                     # Fire Ball Sequence
                     print("Starting ID 2 Sequence: Activating BLDC...")
                     self.hw.activate_bldc()
-                    time.sleep(1.0) # Wait for spin up
+                    time.sleep(1.0)  # Wait for spin up
 
                     print("Firing Ball...")
                     self.hw.drop_ball()
@@ -458,12 +467,13 @@ class System:
                     steps = abs(yaw_correction_deg * STEPS_PER_DEGREE)
                     direction = 1 if yaw_correction_deg > 0 else 0
                     if steps >= 1:
-                         self.hw.rotate_stepper(steps, direction)
+                        self.hw.rotate_stepper(steps, direction)
 
         except KeyboardInterrupt:
             print("Stopping...")
         finally:
             self.hw.cleanup()
+
 
 if __name__ == "__main__":
     sys_inst = System()
