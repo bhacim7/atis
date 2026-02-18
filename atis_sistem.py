@@ -42,7 +42,7 @@ BLDC_CHANNEL = 4           # ESC for Brushless Motor
 # Stepper Settings
 STEPS_PER_REV = 1600  # 1/8 microstepping assumed from olcak.py
 STEPS_PER_DEGREE = STEPS_PER_REV / 360.0
-STEP_DELAY = 0.0012   # Speed control
+STEP_DELAY = 0.0007   # Speed control
 SWEEP_ANGLE = 100     # Sweep angle (total range from center: +/- SWEEP_ANGLE)
 SWEEP_STEPS = int(SWEEP_ANGLE * STEPS_PER_DEGREE)
 
@@ -50,23 +50,23 @@ SWEEP_STEPS = int(SWEEP_ANGLE * STEPS_PER_DEGREE)
 BLDC_ACTIVE_PWM = 1850
 
 # PID Constants (from denemePro.py)
-KP_YAW = 0.8
+KP_YAW = 0.5
 KI_YAW = 0.005
 KD_YAW = 0.02
 PID_LIMIT = 20.0 # Integral limit
 
 # Image Settings
-IMG_WIDTH = 1280
-IMG_HEIGHT = 720
+IMG_WIDTH = 1920
+IMG_HEIGHT = 1080
 FOV_X = 110.0 # ZED 2i approximate horizontal FOV in degrees
 
 # Operational Settings
-AIM_TOLERANCE_PIXELS = 20 # Pixel error tolerance for aiming
+AIM_TOLERANCE_PIXELS = 30 # Pixel error tolerance for aiming
 WATER_SPRAY_DURATION = 10.0 # Seconds
 SCAN_STEP_SIZE = 5 # Steps per loop iteration during scan
 
 # Model Path (TensorRT Engine)
-MODEL_PATH = "/home/siren/PycharmProjects/PythonProject/atis/weights/small640.engine"
+MODEL_PATH = "/home/siren/PycharmProjects/PythonProject/atis/weights/TNA.engine"
 
 class HardwareController:
     def __init__(self):
@@ -172,6 +172,8 @@ class HardwareController:
         servo_ch = SERVO_CHANNELS[self.ball_index]
         print(f"Firing Ball {self.ball_index + 1} using Servo {servo_ch}")
 
+        
+
         # Rotate 90 degrees to drop
         self.kit.servo[servo_ch].angle = 90
         time.sleep(0.5)
@@ -208,7 +210,7 @@ class CameraHandler:
             print("Initializing ZED Camera...")
             self.zed = sl.Camera()
             init_params = sl.InitParameters()
-            init_params.camera_resolution = sl.RESOLUTION.HD720
+            init_params.camera_resolution = sl.RESOLUTION.HD1080
             init_params.camera_fps = 30
             init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE
             init_params.coordinate_units = sl.UNIT.METER
@@ -254,7 +256,7 @@ class CameraHandler:
 
         # Convert BGRA to BGR for YOLO
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        results = self.model(frame_bgr, verbose=False)
+        results = self.model(frame_bgr, verbose=False, imgsz=1024)
 
         detections = []
         for result in results:
