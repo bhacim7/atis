@@ -36,14 +36,14 @@ ENA_PIN = 37
 RELAY_PIN = 12
 
 # I2C / PCA9685
-SERVO_CHANNELS = [1, 2, 3] # Servo 1, 2, 3
+SERVO_CHANNELS = [1, 3, 2] # Servo 1, 2, 3
 BLDC_CHANNEL = 4           # ESC for Brushless Motor
 
 # Stepper Settings
 STEPS_PER_REV = 1600  # 1/8 microstepping assumed from olcak.py
 STEPS_PER_DEGREE = STEPS_PER_REV / 360.0
-STEP_DELAY = 0.0004   # Speed control
-SWEEP_ANGLE = 270     # Sweep angle (total range from center: +/- SWEEP_ANGLE)
+STEP_DELAY = 0.0012   # Speed control
+SWEEP_ANGLE = 100     # Sweep angle (total range from center: +/- SWEEP_ANGLE)
 SWEEP_STEPS = int(SWEEP_ANGLE * STEPS_PER_DEGREE)
 
 # BLDC Settings
@@ -66,7 +66,7 @@ WATER_SPRAY_DURATION = 10.0 # Seconds
 SCAN_STEP_SIZE = 5 # Steps per loop iteration during scan
 
 # Model Path (TensorRT Engine)
-MODEL_PATH = "/home/yarkin/roboboatIDA/roboboat/weights/small640.engine"
+MODEL_PATH = "/home/siren/PycharmProjects/PythonProject/atis/weights/small640.engine"
 
 class HardwareController:
     def __init__(self):
